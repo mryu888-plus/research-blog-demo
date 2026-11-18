@@ -1,0 +1,285 @@
+"use strict";
+let currentSelection = "";
+let currentArticleId = "";
+let activeRequest;
+
+// Buffer complete SSE events: a network chunk is not an event boundary.
+function createSseParser(onData) {
+  let pending = "";
+  return {
+    push(chunk) {
+      pending += chunk;
+      let boundary;
+      while ((boundary = /\r?\n\r?\n/.exec(pending))) {
+        const event = pending.slice(0, boundary.index);
+        pending = pending.slice(boundary.index + boundary[0].length);
+        const data = event.split(/\r?\n/).filter(line => line.startsWith("data:"))
+          .map(line => line.slice(5).replace(/^ /, "")).join("\n");
+        if (data && data !== "[DONE]") onData(JSON.parse(data));
+      }
+    },
+  };
+}
+
+function parseSearchIndex(text) {
+  // Zola serve appends LiveReload scripts even to this JSON-producing HTML route.
+  const payload = text.split(/\r?\n<script>window\.LiveReloadOptions=/, 1)[0];
+  const posts = JSON.parse(payload);
+  if (!Array.isArray(posts)) throw new Error("Invalid search index");
+  for (const post of posts) {
+    if (!post || typeof post.body !== "string") continue;
+    // striptags leaves the protected formulas' numeric HTML references intact.
+    // Decode once as text; named references and other metadata stay unchanged.
+    post.body = post.body.replace(/&#(?:([0-9]+)|[xX]([0-9a-fA-F]+));/g, (reference, decimal, hex) => {
+      const codepoint = Number.parseInt(decimal ?? hex, decimal === undefined ? 16 : 10);
+      if (codepoint < 1 || codepoint > 0x10ffff || (codepoint >= 0xd800 && codepoint <= 0xdfff)) return reference;
+      return String.fromCodePoint(codepoint);
+    });
+  }
+  return posts;
+}
+
+function searchPosts(posts, query) {
+  const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return [];
+  return posts.map(post => {
+    const title = post.title.toLocaleLowerCase();
+    const text = `${post.title} ${post.tags.join(" ")} ${post.description} ${post.body}`.toLocaleLowerCase();
+    return { post, score: terms.every(term => text.includes(term)) ?
+      terms.reduce((score, term) => score + (title.includes(term) ? 10 : 1), 0) : 0 };
+  }).filter(item => item.score).sort((a, b) => b.score - a.score).slice(0, 30).map(item => item.post);
+}
+
+function renderArticleMath(content, renderer = globalThis.katex, autoRender = globalThis.renderMathInElement) {
+  if (!content) return;
+  if (typeof renderer?.render === "function") {
+    content.querySelectorAll(".math-source[data-math-tex]").forEach(node => {
+      if (node.dataset.mathRendered === "true") return;
+      const fallback = node.textContent;
+      try {
+        // The DOM has already decoded the source's HTML entities. Do not read
+        // the fallback: Markdown or an earlier render may have changed it.
+        renderer.render(node.dataset.mathTex, node, {
+          displayMode: node.dataset.mathDisplay === "true", throwOnError: false,
+        });
+        node.dataset.mathRendered = "true";
+      } catch (_) {
+        // Retain readable source even if a renderer fails after clearing the node.
+        node.textContent = fallback;
+      }
+    });
+  }
+  // Prepared pages already distinguish math from escaped dollars, prices and
+  // code. Re-scanning their rendered text would undo those distinctions.
+  if (typeof autoRender === "function" && content.dataset?.mathPrepared !== "true") {
+    autoRender(content, {
+      delimiters: [
+        { left: "$$", right: "$$", display: true },
+        { left: "$", right: "$", display: false },
+        { left: "\\(", right: "\\)", display: false },
+        { left: "\\[", right: "\\]", display: true },
+      ],
+      ignoredClasses: ["math-source", "katex"],
+      throwOnError: false,
+    });
+  }
+}
+
+if (typeof module !== "undefined") module.exports = { createSseParser, searchPosts, parseSearchIndex, renderArticleMath };
+if (typeof document !== "undefined") document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("theme-toggle").onclick = () => {
+    const theme = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    document.documentElement.dataset.theme = theme;
+    try { localStorage.setItem("blog-theme", theme); } catch (_) {}
+  };
+  document.querySelectorAll("[data-close-dialog]").forEach(button => {
+    button.onclick = () => button.closest("dialog").close();
+  });
+  document.querySelectorAll("dialog").forEach(dialog => dialog.addEventListener("click", event => {
+    if (event.target !== dialog) return;
+    const rect = dialog.getBoundingClientRect();
+    if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close();
+  }));
+  initSearch();
+  initRss();
+  initArticleContent();
+  document.addEventListener("blog:preview-updated", () => { currentSelection = ""; initArticleContent(); });
+});
+
+function initRss() {
+  const trigger = document.getElementById("rss-toggle");
+  const dialog = document.getElementById("rss-dialog");
+  const address = document.getElementById("rss-address");
+  const copy = document.getElementById("rss-copy");
+  const status = document.getElementById("rss-status");
+  if (!trigger || !dialog || typeof dialog.showModal !== "function") return;
+  trigger.addEventListener("click", event => {
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    status.textContent = "";
+    dialog.showModal();
+    copy.focus();
+  });
+  address.addEventListener("click", () => address.select());
+  copy.addEventListener("click", async () => {
+    copy.disabled = true;
+    try {
+      await navigator.clipboard.writeText(address.value);
+      status.textContent = "已复制，在 RSS 阅读器中添加这个地址即可。";
+    } catch (_) {
+      address.focus();
+      address.select();
+      status.textContent = "无法自动复制。地址已选中，请手动复制。";
+    } finally { copy.disabled = false; }
+  });
+}
+
+function initArticleContent() {
+  initFigures();
+  document.querySelectorAll("pre > code").forEach(code => {
+    const button = document.createElement("button");
+    button.className = "copy-code";
+    button.textContent = "复制代码";
+    button.onclick = async () => {
+      try { await navigator.clipboard.writeText(code.textContent); button.textContent = "已复制"; }
+      catch (_) { button.textContent = "请手动选择复制"; }
+      setTimeout(() => { button.textContent = "复制代码"; }, 2000);
+    };
+    code.parentElement.appendChild(button);
+  });
+  renderArticleMath(document.querySelector(".article-content"));
+  const article = document.querySelector(".article");
+  if (article && document.body.dataset.agentEndpoint) {
+    currentArticleId = article.dataset.articleId;
+    initAgent();
+  }
+}
+
+function initSearch() {
+  const dialog = document.getElementById("search-dialog");
+  const input = document.getElementById("search-input");
+  const status = document.getElementById("search-status");
+  const results = document.getElementById("search-results");
+  let indexPromise;
+  let revision = 0;
+  document.addEventListener("blog:preview-updated", () => {
+    indexPromise = null; revision++;
+    if (dialog.open) input.dispatchEvent(new Event("input"));
+  });
+  function open() { dialog.showModal(); input.focus(); if (input.value.trim()) input.dispatchEvent(new Event("input")); }
+  document.getElementById("search-toggle").onclick = open;
+  document.addEventListener("keydown", event => {
+    if (event.key === "/" && !event.ctrlKey && !event.metaKey && !event.altKey &&
+      !event.target.closest("input,textarea,[contenteditable=true]") && !document.querySelector("dialog[open]")) {
+      event.preventDefault(); open();
+    }
+  });
+  input.addEventListener("input", async () => {
+    const version = ++revision;
+    const query = input.value.trim();
+    results.replaceChildren();
+    if (!query) { status.textContent = "输入关键词开始搜索"; return; }
+    status.textContent = "正在搜索…";
+    try {
+      if (!indexPromise) indexPromise = fetch(document.body.dataset.searchUrl).then(response => {
+        if (!response.ok) throw new Error("index unavailable");
+        return response.text().then(parseSearchIndex);
+      }).catch(error => { indexPromise = null; throw error; });
+      const posts = await indexPromise;
+      if (version !== revision) return;
+      const matches = searchPosts(posts, query);
+      status.textContent = matches.length ? `找到 ${matches.length} 篇笔记` : "没有找到匹配的笔记，试试其他关键词。";
+      for (const post of matches) {
+        const link = document.createElement("a");
+        link.className = "search-result";
+        link.href = post.url;
+        const title = document.createElement("strong"); title.textContent = post.title;
+        const description = document.createElement("p"); description.textContent = post.description;
+        link.append(title, description); results.appendChild(link);
+      }
+    } catch (_) { if (version === revision) status.textContent = "搜索暂时不可用，请检查网络后重新输入。"; }
+  });
+}
+
+function initFigures() {
+  const dialog = document.getElementById("figure-dialog");
+  document.querySelectorAll(".figure-wrapper img").forEach(img => {
+    img.tabIndex = 0;
+    img.setAttribute("role", "button");
+    img.setAttribute("aria-label", `放大：${img.alt}`);
+    function show() {
+      const preview = dialog.querySelector("img"); preview.src = img.src; preview.alt = img.alt;
+      dialog.querySelector("p").textContent = img.closest("figure").querySelector("figcaption")?.textContent || img.alt;
+      dialog.showModal();
+    }
+    img.onclick = show;
+    img.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); show(); } };
+  });
+}
+
+function initAgent() {
+  const panel = document.getElementById("agent-panel");
+  const input = document.getElementById("question-input");
+  const submit = document.getElementById("submit-question");
+  document.getElementById("ask-article").onclick = () => openAgentPanel();
+  document.getElementById("close-panel").onclick = () => {
+    activeRequest?.abort(); panel.classList.add("hidden"); document.getElementById("ask-article").focus();
+  };
+  submit.onclick = async () => {
+    const question = input.value.trim();
+    if (!question || activeRequest) return;
+    input.value = "";
+    await sendQuestion(question, currentSelection);
+    currentSelection = "";
+  };
+  input.onkeydown = event => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) submit.click(); };
+  let askButton;
+  document.querySelector(".article-content").addEventListener("mouseup", () => {
+    askButton?.remove();
+    const selection = window.getSelection();
+    const text = selection?.toString().trim();
+    if (!text || text.length > 500 || !selection.rangeCount) return;
+    const rect = selection.getRangeAt(0).getBoundingClientRect();
+    askButton = document.createElement("button"); askButton.className = "ask-trigger"; askButton.textContent = "询问";
+    askButton.style.left = `${Math.min(rect.left + scrollX, document.documentElement.clientWidth - 95)}px`;
+    askButton.style.top = `${rect.bottom + scrollY + 8}px`;
+    askButton.onclick = () => { currentSelection = text; openAgentPanel("请解释选中的内容"); askButton.remove(); };
+    document.body.appendChild(askButton);
+  });
+}
+
+function openAgentPanel(question = "") {
+  document.getElementById("agent-panel").classList.remove("hidden");
+  const input = document.getElementById("question-input"); input.value = question; input.focus();
+}
+
+async function sendQuestion(question, selection) {
+  const output = document.getElementById("agent-output");
+  const submit = document.getElementById("submit-question");
+  const user = document.createElement("div"); user.className = "message user-message"; user.textContent = question;
+  const answer = document.createElement("div"); answer.className = "message agent-message"; answer.textContent = "思考中…";
+  output.append(user, answer);
+  activeRequest = new AbortController(); submit.disabled = true;
+  const timeout = setTimeout(() => activeRequest?.abort(), 90000);
+  let received = false;
+  try {
+    const response = await fetch(document.body.dataset.agentEndpoint, {
+      method: "POST", headers: { "Content-Type": "application/json" }, signal: activeRequest.signal,
+      body: JSON.stringify({ article_id: currentArticleId, question, selection, mode: "reader" }),
+    });
+    if (!response.ok || !response.body) throw new Error(`助手暂时无法响应（${response.status}）`);
+    const reader = response.body.getReader(); const decoder = new TextDecoder();
+    const parser = createSseParser(data => {
+      if (data.error) throw new Error("助手生成失败，请稍后重试。");
+      const token = data.type === "token" ? data.text : data.content;
+      if (token) { if (!received) answer.textContent = ""; received = true; answer.textContent += token; }
+      output.scrollTop = output.scrollHeight;
+    });
+    while (true) { const { done, value } = await reader.read(); if (done) break; parser.push(decoder.decode(value, { stream: true })); }
+    parser.push(decoder.decode());
+    if (!received) throw new Error("助手没有返回内容，请重试。");
+  } catch (error) {
+    answer.classList.add("error-message");
+    answer.textContent += `\n${error.name === "AbortError" ? "请求已停止或超时。" : error.message}`;
+  } finally { clearTimeout(timeout); activeRequest = null; submit.disabled = false; output.scrollTop = output.scrollHeight; }
+}

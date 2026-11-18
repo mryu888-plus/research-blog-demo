@@ -1,0 +1,61 @@
+name: Publish research notes
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install blogctl
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The blogctl release this site was created with. Change it only on purpose.
+          BLOGCTL_VERSION: '0.2.0'
+        run: |
+          set -euo pipefail
+          asset=blogctl-x86_64-unknown-linux-musl.tar.gz
+          dir="$RUNNER_TEMP/blogctl"
+          mkdir -p "$dir"
+          gh release download "blogctl-v$BLOGCTL_VERSION" --repo mryu888-plus/research-blog --pattern "$asset" --pattern SHA256SUMS --dir "$dir"
+          (cd "$dir" && grep " $asset\$" SHA256SUMS | sha256sum -c -)
+          tar -xzf "$dir/$asset" -C "$dir"
+          echo "$dir" >> "$GITHUB_PATH"
+          sudo apt-get update -qq
+          sudo apt-get install -y fonts-noto-cjk
+      - uses: actions/cache@v4
+        with:
+          path: ~/.local/share/research-blog/tools
+          key: research-blog-tools-${{ runner.os }}-zola-0.23.4-typst-0.15.1
+      - name: Build and check the website
+        run: blogctl check
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: site/public
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - uses: actions/deploy-pages@v4
+        id: deployment

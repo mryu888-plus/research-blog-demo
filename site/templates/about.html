@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}{{ page.title }} · {{ config.title }}{% endblock title %}
+{% block extra_styles %}
+{% if config.extra.profile_enabled | default(value=false) %}
+<link rel="stylesheet" href="{{ get_url(path='about.css', cachebust=true) }}">
+<script defer src="{{ get_url(path='about.js', cachebust=true) }}"></script>
+{% endif %}
+{% endblock extra_styles %}
+{% block content %}
+{% if config.extra.profile_enabled | default(value=false) %}
+{% set profile = load_data(path="data/profile.json") %}
+<article class="profile">
+  <header class="home-header page-header profile-header">
+    <div class="profile-intro">
+      <p class="eyebrow"><span class="accent-mark" aria-hidden="true">/</span> 关于我</p>
+      <h1>{{ profile.display_name }}</h1>
+      {% if profile.english_name is defined and profile.english_name %}<p class="profile-english">{{ profile.english_name }}</p>{% endif %}
+      {% if profile.intro is defined and profile.intro %}<p class="profile-lead">{{ profile.intro }}</p>{% endif %}
+      {% if profile.current_research is defined and profile.current_research %}<p class="profile-current">{{ profile.current_research }}</p>{% endif %}
+      {% if profile.research_interests is defined and profile.research_interests %}<p class="profile-interests">{{ profile.research_interests }}</p>{% endif %}
+      {% if profile.location is defined and profile.location %}<p class="profile-location">{{ profile.location }}</p>{% endif %}
+      <div class="profile-links">
+        <a class="text-link profile-download" href="{{ get_url(path='resume.pdf') }}" download>下载简历（PDF）<span aria-hidden="true">↓</span></a>
+        {% if profile.email is defined and profile.email %}<a class="text-link" href="mailto:{{ profile.email }}">邮件联系 <span aria-hidden="true">↗</span></a>{% endif %}
+        {% if profile.github is defined and profile.github %}<a class="text-link" href="{{ profile.github }}" rel="me">GitHub <span aria-hidden="true">↗</span></a>{% endif %}
+      </div>
+    </div>
+    <button class="profile-art" type="button" aria-label="拨动轨道" title="移动鼠标探索，点击拨动轨道">
+      <svg viewBox="0 0 320 320" fill="none" aria-hidden="true">
+        <path class="art-grid" d="M40 80H280M40 160H280M40 240H280M80 40V280M160 40V280M240 40V280"/>
+        <g class="art-system">
+        <circle class="art-orbit" cx="160" cy="160" r="112"/>
+        <g class="art-inner" transform="rotate(38 160 160)">
+          <ellipse class="art-orbit" cx="160" cy="160" rx="62" ry="112"/>
+          <circle class="art-point art-point-secondary" cx="149" cy="270" r="3"/>
+        </g>
+        <circle class="art-point-halo" cx="245" cy="87" r="10"/>
+        <circle class="art-point art-point-primary" cx="245" cy="87" r="4"/>
+        </g>
+        <path class="art-axis" d="M48 252L272 68M38 48H54M46 40V56M266 272H282M274 264V280"/>
+        <path class="art-mark" d="M179 113L141 207"/>
+      </svg>
+    </button>
+  </header>
+
+  {% if profile.experiences is defined and profile.experiences | length > 0 %}
+  <section class="profile-section profile-work" aria-labelledby="profile-work-title">
+    <h2 id="profile-work-title">研究与实践</h2>
+    <div class="profile-work-list">
+    {% for work in profile.experiences %}
+      <article class="profile-work-entry">
+        <div class="profile-entry-heading">
+          <h3>{% if work.web_title is defined and work.web_title %}{{ work.web_title }}{% elif work.paper_title is defined and work.paper_title %}{{ work.paper_title }}{% else %}{{ work.org | default(value="") }}{% endif %}</h3>
+          {% if work.date is defined and work.date %}<span class="profile-date">{{ work.date }}</span>{% endif %}
+        </div>
+        {% if work.org is defined and work.org or work.role is defined and work.role %}
+        <p class="profile-entry-meta">{% if work.org is defined and work.org %}<span>{{ work.org }}</span>{% endif %}{% if work.role is defined and work.role %}<span>{{ work.role }}</span>{% endif %}</p>
+        {% endif %}
+        {% if work.summary is defined and work.summary %}<p class="profile-work-summary">{{ work.summary }}</p>{% endif %}
+        {% if work.venue is defined and work.venue or work.status is defined and work.status or work.paper_title is defined and work.paper_title or work.paper_url is defined and work.paper_url %}
+        <div class="profile-paper">
+          {% if work.venue is defined and work.venue or work.status is defined and work.status %}
+          <div class="profile-paper-meta">{% if work.venue is defined and work.venue %}<span>{{ work.venue }}</span>{% endif %}{% if work.status is defined and work.status %}<span>{{ work.status }}</span>{% endif %}</div>
+          {% endif %}
+          {% if work.paper_url is defined and work.paper_url %}
+          <a class="profile-paper-title" href="{{ work.paper_url }}">{% if work.paper_title is defined and work.paper_title %}{{ work.paper_title }}{% else %}阅读论文{% endif %} <span class="profile-paper-source">{% if "arxiv.org/" in work.paper_url %}arXiv{% else %}论文{% endif %} <span aria-hidden="true">↗</span></span></a>
+          {% elif work.paper_title is defined and work.paper_title and work.paper_title != work.web_title | default(value="") %}
+          <p class="profile-paper-title">{{ work.paper_title }}</p>
+          {% endif %}
+        </div>
+        {% endif %}
+        {% if work.bullets is defined and work.bullets | length > 0 %}
+        <details class="profile-details">
+          <summary>工作细节</summary>
+          <ul>{% for bullet in work.bullets %}<li>{{ bullet }}</li>{% endfor %}</ul>
+        </details>
+        {% endif %}
+      </article>
+    {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if profile.education is defined and profile.education | length > 0 %}
+  <section class="profile-section" aria-labelledby="profile-education-title">
+    <h2 id="profile-education-title">教育经历</h2>
+    <div class="profile-education-list">
+    {% for study in profile.education %}
+      <article class="profile-education-entry">
+        <div class="profile-entry-heading">
+          <h3>{{ study.school }}</h3>
+          {% if study.date is defined and study.date %}<span class="profile-date">{{ study.date }}</span>{% endif %}
+        </div>
+        {% if study.degree is defined and study.degree %}<p class="profile-degree">{{ study.degree }}</p>{% endif %}
+        {% if study.detail is defined and study.detail %}<p class="profile-study-detail">{{ study.detail }}</p>{% endif %}
+      </article>
+    {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if profile.honors is defined and profile.honors | length > 0 %}
+  <section class="profile-section" aria-labelledby="profile-honors-title">
+    <h2 id="profile-honors-title">荣誉与奖项</h2>
+    <ul class="profile-honors-list">
+    {% for honor in profile.honors %}
+      <li>{% if honor.year is defined and honor.year %}<span class="profile-date">{{ honor.year }}</span>{% endif %}<span>{{ honor.title }}</span></li>
+    {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+  {% if profile.tagline is defined and profile.tagline %}<p class="profile-tagline">{{ profile.tagline }}</p>{% endif %}
+</article>
+{% else %}<article class="profile"><header class="home-header page-header"><h1>{{ page.title }}</h1></header><div class="article-content">{{ page.content | safe }}</div></article>{% endif %}
+{% endblock content %}

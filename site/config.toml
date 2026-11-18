@@ -1,0 +1,34 @@
+base_url = "https://mryu888-plus.github.io/research-blog-demo/"
+title = "Research Blog 演示站"
+description = "研究、阅读与写作。"
+default_language = "zh"
+
+compile_sass = true
+build_search_index = false
+generate_feeds = true
+feed_filenames = ["atom.xml"]
+taxonomies = [{name = "tags", feed = true}]
+
+[markdown]
+render_emoji = false
+insert_anchor_links = "heading"
+
+[markdown.highlighting]
+style = "inline"
+theme = "ayu-dark"
+
+[extra]
+author = "Researcher"
+profile_enabled = false
+enable_katex = true
+agent_endpoint = ""
+topic_tree = [
+  { id = "workflow", label = "研究工作流", children = [{ tag = "writing" }, { tag = "typst" }, { tag = "design" }] },
+]
+
+[extra.tag_labels]
+writing = "写作"
+typst = "Typst 图形"
+design = "设计"
+
+[extra.tag_descriptions]
